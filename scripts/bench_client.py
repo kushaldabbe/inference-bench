@@ -143,15 +143,24 @@ async def run_cell(
     prompts_per_cell: int,
     out_path: Path,
 ):
-    """Run one (engine, concurrency, prompt_len) cell."""
+    """Run one (engine, concurrency, prompt_len) cell.
+
+    A semaphore gates in-flight requests to the target concurrency so the
+    sweep measures server behavior under real concurrency (not just an httpx
+    connection-pool limit). With fewer prompts than the concurrency target,
+    the cell runs at min(concurrency, prompts_per_cell) in flight.
+    """
     prompts = make_prompts(prompts_per_cell, prompt_len)
-    # Open enough connections for the concurrency level
-    limits = httpx.Limits(max_connections=concurrency * 2, max_keepalive_connections=concurrency)
+    # Pool is generous; the semaphore is the concurrency gate.
+    limits = httpx.Limits(max_connections=200, max_keepalive_connections=concurrency)
+    sem = asyncio.Semaphore(concurrency)
+
+    async def throttled(prompt: str, req_id: int) -> dict:
+        async with sem:
+            return await stream_one(client, endpoint, model, prompt, output_tokens, temperature, req_id)
+
     async with httpx.AsyncClient(limits=limits) as client:
-        tasks = [
-            stream_one(client, endpoint, model, p, output_tokens, temperature, i)
-            for i, p in enumerate(prompts)
-        ]
+        tasks = [throttled(p, i) for i, p in enumerate(prompts)]
         results = await asyncio.gather(*tasks)
 
     with out_path.open("a") as f:
@@ -193,7 +202,7 @@ async def main():
     ap.add_argument("--prompt-len", type=int, nargs="+", default=[32, 128, 512, 2048])
     ap.add_argument("--output-tokens", type=int, default=128)
     ap.add_argument("--temperature", type=float, default=0.0)
-    ap.add_argument("--prompts-per-cell", type=int, default=20)
+    ap.add_argument("--prompts-per-cell", type=int, default=40)
     ap.add_argument("--out", default="results/raw.jsonl")
     args = ap.parse_args()
 

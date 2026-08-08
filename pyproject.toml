@@ -5,7 +5,7 @@ description = "Benchmark vLLM vs SGLang vs TGI: throughput, TTFT, ITL, and p99 l
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
-authors = [{ name = "Your Name" }]
+authors = [{ name = "Kushal Dabbe", email = "kushaldabbe752@gmail.com" }]
 # Runtime deps live in requirements.txt. The inference engines (vllm/sglang/tgi)
 # are NOT declared here — they are installed on the RunPod pod by run_all.sh,
 # version-pinned per engine. See README.

@@ -11,10 +11,11 @@ MODEL_FALLBACK: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 # HF token (set as env var on RunPod: export HF_TOKEN=...)
 # Required for Llama-3 gated access.
 
-# GPU selection for RunPod (RTX 4090 = cheapest 24GB)
-GPU_TYPE: "RTX 4090"
-CUDA_VERSION: "12.4.0"
-PYTORCH_VERSION: "2.5.1"
+# GPU target: RTX 4090 24GB (RunPod). Confirmed stack from the pod:
+#   driver 580.126.20 / CUDA 13.0, Python 3.12.3.
+#   No local engine install — engines run from their official Docker images
+#   (see README "Deploy engine pods"). Only httpx is needed on the client.
+GPU_TYPE: "RTX 4090 24GB"
 
 # Server ports (each engine runs one at a time)
 PORT: 8000
@@ -27,17 +28,12 @@ TEMPERATURE: 0.0   # greedy for reproducibility
 # Prompt length categories (input token count target)
 PROMPT_LENS: [32, 128, 512, 2048]
 
-# Number of unique prompts per (concurrency, prompt_len) cell
-PROMPTS_PER_CELL: 20
+# Number of unique prompts per (concurrency, prompt_len) cell.
+# Must be >= max concurrency so the top of the sweep is meaningful.
+PROMPTS_PER_CELL: 40
 
-# vLLM-specific
-VLLM_VERSION: "0.8.5.post1"
-VLLM_EXTRA_ARGS: "--gpu-memory-utilization 0.9 --max-model-len 4096"
-
-# SGLang-specific
-SGLANG_VERSION: "latest"
-SGLANG_EXTRA_ARGS: "--mem-fraction-static 0.9 --context-length 4096"
-
-# TGI-specific
-TGI_VERSION: "latest"
-TGI_EXTRA_ARGS: "--max-total-tokens 4096 --max-batch-size 256"
+# Engines run as RunPod pods from their official Docker images; versions are
+# pinned at deploy time (see README). Tracked here for reference only.
+VLLM_IMAGE: "vllm/vllm-openai:v0.26.0"
+SGLANG_IMAGE: "lmsysorg/sglang:v0.5.17-cu129-runtime"
+TGI_IMAGE: "ghcr.io/huggingface/text-generation-inference:3.3.7"

@@ -1,10 +1,24 @@
 # inference-bench
 
 Benchmark and compare LLM serving engines — **vLLM**, **SGLang**, and **TGI** —
-on a single GPU. `inference-bench` drives each engine's OpenAI-compatible
+on a single NVIDIA GPU. `inference-bench` drives each engine's OpenAI-compatible
 streaming API with a load generator and records per-request latency and
-throughput across a concurrency × prompt-length sweep, so the three engines see
-an identical, reproducible workload.
+throughput across a concurrency × prompt-length sweep, so all engines see an
+identical, reproducible workload.
+
+## How it works (engine pods + laptop client)
+
+Engines are **not** installed here. Each engine runs as a RunPod pod from its
+official Docker image (the image *is* the environment — no CUDA/torch version
+mismatches). The laptop only runs the load generator (`httpx`) and hits each
+pod's public proxy URL:
+
+```
+your laptop                RunPod pods (RTX 4090)
+bench_client.py   ──────►  https://<pod>-8000.proxy.runpod.net  (vLLM)
+collect_results.py         https://<pod>-8000.proxy.runpod.net  (SGLang)
+                           https://<pod>-8000.proxy.runpod.net  (TGI)
+```
 
 ## What it measures
 
@@ -20,57 +34,78 @@ Each `(engine, concurrency, prompt_len)` cell produces:
 
 Latencies are reported as mean, p50, and p99.
 
+Concurrency is enforced with an `asyncio.Semaphore` (in-flight request gate),
+not an httpx connection-pool side effect, so the sweep measures true server
+concurrency. `PROMPTS_PER_CELL` defaults to 40, above the max concurrency of 32,
+so the top of the sweep is meaningful.
+
 ## Requirements
 
-- Linux with one NVIDIA GPU (~24 GB VRAM; tested on RTX 4090 / A10G). Llama-3-8B
-  in fp16 needs ~16 GB, smaller models need less.
-- `curl` for the readiness probes.
-- A Hugging Face token with access to any gated model you benchmark (e.g. Llama-3).
+- One RTX 4090 (24 GB) pod per engine on RunPod, deployed from the images below.
+- `httpx` on the laptop (auto-installed by `run_remote.sh` if missing).
+- A Hugging Face token with access to any gated model (e.g. Llama-3) — set as
+  `HF_TOKEN` in each pod's environment.
 
-The engines themselves are installed into the active Python environment by
-`run_all.sh` — there is no separate install step. The load generator only
-depends on `httpx`, so it can also run from a separate machine and point
-`--endpoint` at the server.
+## Deploy engine pods (RunPod)
 
-## Usage
+For each engine, create a pod with **Custom Container**, GPU **RTX 4090**, and
+set `HF_TOKEN` in the pod environment. Confirmed images and server args:
+
+| Engine | Image | Server args |
+|---|---|---|
+| vLLM | `vllm/vllm-openai:v0.26.0` | `--model meta-llama/Meta-Llama-3-8B-Instruct --host 0.0.0.0 --port 8000 --gpu-memory-utilization 0.9 --max-model-len 4096` |
+| SGLang | `lmsysorg/sglang:v0.5.17-cu129-runtime` | `--model-path meta-llama/Meta-Llama-3-8B-Instruct --host 0.0.0.0 --port 8000 --mem-fraction-static 0.9 --context-length 4096` |
+| TGI | `ghcr.io/huggingface/text-generation-inference:3.3.7` | `--model-id meta-llama/Meta-Llama-3-8B-Instruct --port 8000 --hostname 0.0.0.0 --max-total-tokens 4096 --max-batch-size 256` |
+
+Notes:
+
+- Deploy all three at once, or one at a time and reuse the pod slot (stop +
+  change image). RunPod bills per running pod.
+- The pod's port 8000 is exposed as `https://<pod-id>-8000.proxy.runpod.net`.
+- The host driver is **not** a constraint: these images run on any driver
+  supporting CUDA 12.x/13.x (confirmed on RunPod driver 580 / CUDA 13.0).
+- **TGI is archived** (Hugging Face put it in maintenance mode, Mar 2026). It
+  still runs and is a valid data point; treat vLLM vs SGLang as the headline
+  comparison and label TGI as legacy in any writeup.
+
+## Run the benchmark (laptop)
 
 ```bash
 git clone https://github.com/kushaldabbe/inference-bench.git
 cd inference-bench
-chmod +x run_all.sh scripts/*.sh
 
-export HF_TOKEN=hf_xxx            # required for gated models
-./run_all.sh                      # benchmark all three engines
-./run_all.sh vllm                 # benchmark one engine
-./run_all.sh vllm sglang          # benchmark a subset
+ENDPOINTS="vllm=https://<vllm-pod>-8000.proxy.runpod.net \
+           sglang=https://<sglang-pod>-8000.proxy.runpod.net \
+           tgi=https://<tgi-pod>-8000.proxy.runpod.net" \
+    ./run_remote.sh
 ```
 
-Each engine is installed, served, benchmarked, then torn down before the next
-starts. Per-request results stream to `results/<engine>_raw.jsonl`; a summary is
-written at the end.
-
-To run on a fresh GPU box with only one file uploaded, `setup_on_pod.sh`
-reconstructs the whole project:
+Run a subset, or a single engine:
 
 ```bash
-bash setup_on_pod.sh
+ENDPOINTS="vllm=https://<vllm-pod>-8000.proxy.runpod.net" ./run_remote.sh vllm
+```
+
+### Sanity-check a pod before the full sweep
+
+```bash
+curl -s https://<pod>-8000.proxy.runpod.net/v1/models
 ```
 
 ## Configuration
 
-Defaults live in [`configs/bench_config.yaml`](configs/bench_config.yaml) and can
-be overridden with environment variables:
+Overrides are environment variables:
 
 ```bash
 # Smaller sweep for quick iteration
-CONCURRENCY="1 8 32" PROMPT_LENS="128 512" PROMPTS_PER_CELL=10 ./run_all.sh vllm
-
-# Different model
-MODEL="TinyLlama/TinyLlama-1.1B-Chat-v1.0" ./run_all.sh
-
-# Pass extra flags to the server
-VLLM_EXTRA_ARGS="--gpu-memory-utilization 0.85 --max-model-len 2048" ./run_all.sh vllm
+MODEL=TinyLlama/TinyLlama-1.1B-Chat-v1.0 \
+CONCURRENCY="1 8 32" PROMPT_LENS="128 512" PROMPTS_PER_CELL=10 \
+ENDPOINTS="vllm=https://<vllm-pod>-8000.proxy.runpod.net" ./run_remote.sh
 ```
+
+Sweep defaults (`configs/bench_config.yaml`): concurrency `1 2 4 8 16 32`,
+prompt lens `32 128 512 2048`, 128 output tokens, greedy (`temperature=0`),
+40 prompts per cell.
 
 ## Output
 
@@ -98,41 +133,44 @@ SQLite/Postgres) and build panels such as:
 
 ```
 inference-bench/
-├── configs/bench_config.yaml   # default sweep + per-engine flags
+├── configs/bench_config.yaml   # sweep defaults + engine images
 ├── scripts/
-│   ├── bench_client.py         # async streaming load generator
+│   ├── bench_client.py         # async streaming load generator (semaphore-gated concurrency)
 │   ├── collect_results.py      # raw JSONL → CSV + JSON + table
-│   ├── serve_vllm.sh           # serve + readiness probe
+│   ├── serve_vllm.sh           # (legacy, single-pod Option B)
 │   ├── serve_sglang.sh
 │   └── serve_tgi.sh
 ├── dashboard/
 │   └── grafana-dashboard.json  # empty scaffold
 ├── results/                    # output (gitignored)
-├── setup_on_pod.sh             # one-file bootstrap for a fresh host
-└── run_all.sh                  # orchestrator: install → serve → bench → teardown
+├── run_remote.sh               # laptop orchestrator against deployed pods (Option A)
+└── run_all.sh                  # (legacy, install-and-run on one pod)
 ```
 
 ## Troubleshooting
 
+**Pod not reachable.** Confirm the pod is running and the proxy URL is the
+`<pod-id>-8000` form. A 404 on `/v1/models` usually means the image's args
+weren't accepted — check the pod logs.
+
+**Gated model 401.** Set `HF_TOKEN` in the pod environment and accept the
+model license on its HF page.
+
+**Timeouts on long prompts.** Default client read timeout is 300 s; the load
+generator is not the bottleneck. First check GPU utilization and the pod logs.
+
 **vLLM OOM on load.** Lower `--gpu-memory-utilization` (e.g. 0.85) or benchmark
-a smaller model.
-
-**vLLM / torch CUDA mismatch.** vLLM is pinned to `0.8.5.post1`, which requires
-`torch==2.6.0` (cu126 wheel). Newer vLLM pulls torch 2.7+ (cu128/cu130) and may
-not run on older drivers — keep the pin or upgrade the host driver.
-
-**TGI install fails.** The Rust build can be fragile; pin a known-good version
-(`pip install text-generation-inference==0.10.0`) or skip TGI
-(`./run_all.sh vllm sglang`).
-
-**Port already in use.** Clear leftover servers: `pkill -f sglang; pkill -f vllm`.
-
-**Gated model 401.** Set `HF_TOKEN` and accept the model license on its HF page.
+a smaller model (`MODEL=TinyLlama/TinyLlama-1.1B-Chat-v1.0`).
 
 ## Notes
 
 - Prompts are generated from a fixed seed, so every engine sees the same
   workload and results are directly comparable.
 - Decoding is greedy (`temperature=0`) by default for reproducibility.
-- Each engine is version-pinned in `run_all.sh`; bump versions deliberately and
-  re-benchmark, since results are not comparable across engine versions.
+- The client runs from the laptop, so reported latencies include public-network
+  latency (roughly constant across engines). For sub-millisecond-accurate TTFT,
+  run the client on a CPU pod in the same region — the relative comparison is
+  unaffected.
+- Engine versions are pinned at deploy time (see `configs/bench_config.yaml`);
+  bump versions deliberately and re-benchmark, since results are not comparable
+  across engine versions.
