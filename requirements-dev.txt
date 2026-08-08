@@ -1,0 +1,11 @@
+# Development dependencies — not needed to run the bench, only to develop/lint
+-r requirements.txt
+
+# Linting & formatting (ruff replaces black + isort + flake8)
+ruff>=0.5
+
+# Type checking (optional but recommended)
+mypy>=1.10
+
+# Testing (no unit tests yet — harness is a load generator against a live server)
+pytest>=8.0

@@ -1,0 +1,43 @@
+[project]
+name = "inference-bench"
+version = "0.1.0"
+description = "Benchmark vLLM vs SGLang vs TGI: throughput, TTFT, ITL, and p99 latency across a concurrency x prompt-length sweep"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Your Name" }]
+# Runtime deps live in requirements.txt. The inference engines (vllm/sglang/tgi)
+# are NOT declared here — they are installed on the RunPod pod by run_all.sh,
+# version-pinned per engine. See README.
+
+# ---------- Ruff (lint + format) ----------
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["scripts"]
+
+[tool.ruff.lint]
+# Enable reasonable defaults: pyflakes, pycodestyle, isort, pyupgrade, etc.
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "SIM",  # flake8-simplify
+    "C4",   # flake8-comprehensions
+]
+ignore = [
+    "E501",  # line length handled by formatter
+]
+
+[tool.ruff.format]
+quote-style = "double"
+
+# ---------- Mypy (optional, grow into this) ----------
+[tool.mypy]
+python_version = "3.11"
+strict = false
+ignore_missing_imports = true
+warn_unused_ignores = true

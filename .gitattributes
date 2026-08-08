@@ -1,0 +1,35 @@
+# Normalize line endings — checkout OS-native, commit LF.
+# This prevents cross-platform line-ending churn.
+# CRITICAL for this repo: .sh and .py files are authored on Windows but run on
+# Linux RunPod pods. Forced LF below guarantees no CRLF corruption.
+* text=auto eol=lf
+
+# Force LF for these (scripts, env files)
+*.sh text eol=lf
+*.py text eol=lf
+*.toml text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.json text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+
+# Force CRLF for Windows-only files
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary files — never diff/merge as text
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.pdf binary
+*.pt binary
+*.pth binary
+*.bin binary
+*.safetensors binary
+*.gguf binary
+*.onnx binary
+*.ckpt binary
+*.ipynb binary

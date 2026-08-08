@@ -1,0 +1,9 @@
+# Runtime dependencies for the benchmark client.
+#
+# NOTE: the inference engines (vllm, sglang, tgi) are intentionally NOT listed
+# here. They are heavy, CUDA-version-specific, and pinned per engine inside
+# run_all.sh, which installs them fresh on the RunPod pod. Declaring them here
+# would create conflicts and bloat local dev installs.
+#
+# For local dev (linting/formatting the client only), this single dep is enough:
+httpx>=0.27

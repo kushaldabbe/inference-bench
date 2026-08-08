@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Test / lint caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Benchmark results — large, regenerated per run. Keep dir via .gitkeep.
+results/*
+!results/.gitkeep
+
+# Model weights / HF cache (if anything lands locally)
+*.safetensors
+*.bin
+*.gguf
+*.pt
+*.pth
+hf_cache/
+.cache/
+
+# Secrets / env
+.env
+.env.local
+*.secret

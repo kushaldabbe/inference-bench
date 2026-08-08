@@ -1,0 +1,7 @@
+{
+  "title": "LLM Inference Engine Benchmark",
+  "schemaVersion": 39,
+  "version": 0,
+  "panels": [],
+  "description": "Empty dashboard scaffold. Build panels from results/summary.json after a run. Recommended panels: (1) throughput vs concurrency, (2) TTFT p99 vs prompt length, (3) ITL p50 vs concurrency, (4) E2E p99 vs concurrency, (5) throughput vs prompt length heatmap. See README 'Building the Grafana dashboard'."
+}
