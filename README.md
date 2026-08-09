@@ -6,18 +6,25 @@ streaming API with a load generator and records per-request latency and
 throughput across a concurrency × prompt-length sweep, so all engines see an
 identical, reproducible workload.
 
-## How it works (engine pods + laptop client)
+## How it works (one pod, isolated engine venvs)
 
-Engines are **not** installed here. Each engine runs as a RunPod pod from its
-official Docker image (the image *is* the environment — no CUDA/torch version
-mismatches). The laptop only runs the load generator (`httpx`) and hits each
-pod's public proxy URL:
+Everything runs on **one** RunPod pod. Each engine is installed into its **own
+virtualenv** (`venvs/vllm`, `venvs/sglang`, `venvs/tgi`), so:
+
+- pip never touches the pod template's preinstalled torch (the source of the
+  classic CUDA/torch/vLLM mismatch), and
+- the three engines cannot conflict with each other.
+
+`run_all.sh` installs → serves → benchmarks → tears down each engine in turn
+on the same GPU.
 
 ```
-your laptop                RunPod pods (RTX 4090)
-bench_client.py   ──────►  https://<pod>-8000.proxy.runpod.net  (vLLM)
-collect_results.py         https://<pod>-8000.proxy.runpod.net  (SGLang)
-                           https://<pod>-8000.proxy.runpod.net  (TGI)
+one RunPod pod (RTX 4090)
+run_all.sh
+  ├─ venvs/vllm    →  vllm serve  :8000  → bench_client.py  → results/vllm_raw.jsonl
+  ├─ venvs/sglang  →  sglang      :8000  → bench_client.py  → results/sglang_raw.jsonl
+  └─ venvs/tgi     →  tgi         :8000  → bench_client.py  → results/tgi_raw.jsonl
+                                  └→ collect_results.py → summary.csv/json/txt
 ```
 
 ## What it measures
@@ -41,56 +48,51 @@ so the top of the sweep is meaningful.
 
 ## Requirements
 
-- One RTX 4090 (24 GB) pod per engine on RunPod, deployed from the images below.
-- `httpx` on the laptop (auto-installed by `run_remote.sh` if missing).
-- A Hugging Face token with access to any gated model (e.g. Llama-3) — set as
-  `HF_TOKEN` in each pod's environment.
+- One RunPod pod: RTX 4090 (24 GB), any PyTorch/CUDA template (the template's
+  stack is irrelevant — each engine installs its own).
+- Python 3.11+ and `venv` available on the pod (standard on RunPod templates).
+- A Hugging Face token with access to any gated model (e.g. Llama-3), via
+  `huggingface-cli login` on the pod.
 
-## Deploy engine pods (RunPod)
-
-For each engine, create a pod with **Custom Container**, GPU **RTX 4090**, and
-set `HF_TOKEN` in the pod environment. Confirmed images and server args:
-
-| Engine | Image | Server args |
-|---|---|---|
-| vLLM | `vllm/vllm-openai:v0.26.0` | `--model meta-llama/Meta-Llama-3-8B-Instruct --host 0.0.0.0 --port 8000 --gpu-memory-utilization 0.9 --max-model-len 4096` |
-| SGLang | `lmsysorg/sglang:v0.5.17-cu129-runtime` | `--model-path meta-llama/Meta-Llama-3-8B-Instruct --host 0.0.0.0 --port 8000 --mem-fraction-static 0.9 --context-length 4096` |
-| TGI | `ghcr.io/huggingface/text-generation-inference:3.3.7` | `--model-id meta-llama/Meta-Llama-3-8B-Instruct --port 8000 --hostname 0.0.0.0 --max-total-tokens 4096 --max-batch-size 256` |
-
-Notes:
-
-- Deploy all three at once, or one at a time and reuse the pod slot (stop +
-  change image). RunPod bills per running pod.
-- The pod's port 8000 is exposed as `https://<pod-id>-8000.proxy.runpod.net`.
-- The host driver is **not** a constraint: these images run on any driver
-  supporting CUDA 12.x/13.x (confirmed on RunPod driver 580 / CUDA 13.0).
-- **TGI is archived** (Hugging Face put it in maintenance mode, Mar 2026). It
-  still runs and is a valid data point; treat vLLM vs SGLang as the headline
-  comparison and label TGI as legacy in any writeup.
-
-## Run the benchmark (laptop)
+## Quick start (single pod)
 
 ```bash
 git clone https://github.com/kushaldabbe/inference-bench.git
 cd inference-bench
+chmod +x run_all.sh scripts/*.sh
 
-ENDPOINTS="vllm=https://<vllm-pod>-8000.proxy.runpod.net \
-           sglang=https://<sglang-pod>-8000.proxy.runpod.net \
-           tgi=https://<tgi-pod>-8000.proxy.runpod.net" \
-    ./run_remote.sh
+# ONE-TIME: log in to HF (writes ~/.cache/huggingface/token, shared by all venvs)
+huggingface-cli login
+
+# Smoke test first (fast, cheap): TinyLlama, 1 engine, small sweep
+MODEL=TinyLlama/TinyLlama-1.1B-Chat-v1.0 \
+CONCURRENCY="1 8 32" PROMPT_LENS="128 512" PROMPTS_PER_CELL=5 \
+    ./run_all.sh vllm
+
+# Full sweep: Llama-3-8B, all three engines
+./run_all.sh
+# ...or one at a time
+./run_all.sh vllm
+./run_all.sh sglang
+./run_all.sh tgi
 ```
 
-Run a subset, or a single engine:
+`run_all.sh` prints a **preflight** (nvidia-smi, template torch, HF token
+presence) before installing anything, so a bad pod fails in seconds, not after
+billing hours.
 
-```bash
-ENDPOINTS="vllm=https://<vllm-pod>-8000.proxy.runpod.net" ./run_remote.sh vllm
-```
+### Engine installs (in each venv)
 
-### Sanity-check a pod before the full sweep
+| Engine | Pin | Notes |
+|---|---|---|
+| vLLM | `vllm==0.8.5.post1` + `torch==2.6.0` (cu126 index) | torch pinned from the PyTorch index so pip gets the CUDA wheel, not a CPU build |
+| SGLang | `sglang[all]` + torch (cu126 index) | torch pulled from the PyTorch index |
+| TGI | `text-generation-inference` | ⚠️ **TGI is archived** (HF maintenance mode, Mar 2026); still runs, treat as legacy |
 
-```bash
-curl -s https://<pod>-8000.proxy.runpod.net/v1/models
-```
+Pins are overridable: `VLLM_PIN=... SGLANG_PIN=... TGI_PIN=... ./run_all.sh`.
+Venvs are cached per engine (a `.ready` marker skips reinstall); delete
+`venvs/<engine>` to force a clean install. Bump versions deliberately —
+results are not comparable across engine versions.
 
 ## Configuration
 
@@ -99,13 +101,16 @@ Overrides are environment variables:
 ```bash
 # Smaller sweep for quick iteration
 MODEL=TinyLlama/TinyLlama-1.1B-Chat-v1.0 \
-CONCURRENCY="1 8 32" PROMPT_LENS="128 512" PROMPTS_PER_CELL=10 \
-ENDPOINTS="vllm=https://<vllm-pod>-8000.proxy.runpod.net" ./run_remote.sh
+CONCURRENCY="1 8 32" PROMPT_LENS="128 512" PROMPTS_PER_CELL=10 ./run_all.sh vllm
+
+# Pass extra flags to the server
+VLLM_EXTRA_ARGS="--gpu-memory-utilization 0.85 --max-model-len 2048" ./run_all.sh vllm
 ```
 
 Sweep defaults (`configs/bench_config.yaml`): concurrency `1 2 4 8 16 32`,
 prompt lens `32 128 512 2048`, 128 output tokens, greedy (`temperature=0`),
 40 prompts per cell.
+
 
 ## Output
 
@@ -133,31 +138,39 @@ SQLite/Postgres) and build panels such as:
 
 ```
 inference-bench/
-├── configs/bench_config.yaml   # sweep defaults + engine images
+├── configs/bench_config.yaml   # sweep defaults + engine pins
 ├── scripts/
 │   ├── bench_client.py         # async streaming load generator (semaphore-gated concurrency)
 │   ├── collect_results.py      # raw JSONL → CSV + JSON + table
-│   ├── serve_vllm.sh           # (legacy, single-pod Option B)
+│   ├── serve_vllm.sh           # start engine + readiness probe
 │   ├── serve_sglang.sh
 │   └── serve_tgi.sh
 ├── dashboard/
 │   └── grafana-dashboard.json  # empty scaffold
 ├── results/                    # output (gitignored)
-├── run_remote.sh               # laptop orchestrator against deployed pods (Option A)
-└── run_all.sh                  # (legacy, install-and-run on one pod)
+├── venvs/                      # per-engine virtualenvs (gitignored, created at runtime)
+└── run_all.sh                  # orchestrator: preflight → venv install → serve → bench → teardown
 ```
 
 ## Troubleshooting
 
-**Pod not reachable.** Confirm the pod is running and the proxy URL is the
-`<pod-id>-8000` form. A 404 on `/v1/models` usually means the image's args
-weren't accepted — check the pod logs.
+**Preflight fails (CUDA not available in a venv).** The venv's torch couldn't
+see the GPU. Most likely pip pulled a CPU torch — the script installs torch from
+the PyTorch cu126 index specifically to avoid this. Delete `venvs/<engine>` and
+re-run; confirm `nvidia-smi` works first.
 
-**Gated model 401.** Set `HF_TOKEN` in the pod environment and accept the
-model license on its HF page.
+**torch/CUDA mismatch during install.** Because each engine installs into an
+isolated venv, the template's preinstalled torch is never touched. If a version
+conflict still appears, delete `venvs/<engine>` and check the engine pin
+(`VLLM_PIN`, `SGLANG_PIN`, `TGI_PIN`).
+
+**Gated model 401.** Run `huggingface-cli login` on the pod (writes
+`~/.cache/huggingface/token`, shared by all venvs) and accept the model license
+on its HF page. The preflight checks for the token file before running.
 
 **Timeouts on long prompts.** Default client read timeout is 300 s; the load
-generator is not the bottleneck. First check GPU utilization and the pod logs.
+generator is not the bottleneck. First check GPU utilization and the server
+log (`serve_*.sh` output goes to the terminal).
 
 **vLLM OOM on load.** Lower `--gpu-memory-utilization` (e.g. 0.85) or benchmark
 a smaller model (`MODEL=TinyLlama/TinyLlama-1.1B-Chat-v1.0`).
@@ -167,10 +180,11 @@ a smaller model (`MODEL=TinyLlama/TinyLlama-1.1B-Chat-v1.0`).
 - Prompts are generated from a fixed seed, so every engine sees the same
   workload and results are directly comparable.
 - Decoding is greedy (`temperature=0`) by default for reproducibility.
-- The client runs from the laptop, so reported latencies include public-network
-  latency (roughly constant across engines). For sub-millisecond-accurate TTFT,
-  run the client on a CPU pod in the same region — the relative comparison is
-  unaffected.
-- Engine versions are pinned at deploy time (see `configs/bench_config.yaml`);
-  bump versions deliberately and re-benchmark, since results are not comparable
-  across engine versions.
+- Engine versions are pinned (see `configs/bench_config.yaml` and the `*_PIN`
+  env vars); bump versions deliberately and re-benchmark, since results are not
+  comparable across engine versions.
+- Each engine runs on the same GPU sequentially, so hardware conditions are
+  identical across engines.
+- TGI is archived (HF maintenance mode, Mar 2026): it still runs, but treat
+  vLLM vs SGLang as the headline comparison and label TGI as legacy in any
+  writeup.

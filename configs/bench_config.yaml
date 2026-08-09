@@ -1,20 +1,20 @@
 # Project 1 - LLM Inference Engine Benchmark
 #
-# Single source of truth for benchmark configuration.
-# Edit values here; run_all.sh and bench_client.py both read this file.
+# Single source of truth for benchmark configuration (documentation/reference;
+# runtime values come from the matching env vars in run_all.sh).
 
 # Model to serve (must fit in 24GB VRAM for RTX 4090 / A10G)
 MODEL: "meta-llama/Meta-Llama-3-8B-Instruct"
 # Smaller fallback if the above is gated / too slow to download
 MODEL_FALLBACK: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 
-# HF token (set as env var on RunPod: export HF_TOKEN=...)
-# Required for Llama-3 gated access.
+# HF access for gated models (e.g. Llama-3): run `huggingface-cli login` once
+# on the pod. The token file is shared by all engine venvs.
 
-# GPU target: RTX 4090 24GB (RunPod). Confirmed stack from the pod:
+# GPU target: RTX 4090 24GB (RunPod). Confirmed pod stack:
 #   driver 580.126.20 / CUDA 13.0, Python 3.12.3.
-#   No local engine install — engines run from their official Docker images
-#   (see README "Deploy engine pods"). Only httpx is needed on the client.
+# Engines install into per-engine venvs (venvs/<engine>), never touching the
+# pod template's preinstalled torch. See README "How it works".
 GPU_TYPE: "RTX 4090 24GB"
 
 # Server ports (each engine runs one at a time)
@@ -32,8 +32,9 @@ PROMPT_LENS: [32, 128, 512, 2048]
 # Must be >= max concurrency so the top of the sweep is meaningful.
 PROMPTS_PER_CELL: 40
 
-# Engines run as RunPod pods from their official Docker images; versions are
-# pinned at deploy time (see README). Tracked here for reference only.
-VLLM_IMAGE: "vllm/vllm-openai:v0.26.0"
-SGLANG_IMAGE: "lmsysorg/sglang:v0.5.17-cu129-runtime"
-TGI_IMAGE: "ghcr.io/huggingface/text-generation-inference:3.3.7"
+# Engine install pins (installed into venvs/<engine> by run_all.sh).
+# Overridable via env: VLLM_PIN, SGLANG_PIN, TGI_PIN.
+VLLM_PIN: "vllm==0.8.5.post1"
+VLLM_TORCH: "torch==2.6.0"   # cu126 index — see run_all.sh
+SGLANG_PIN: "sglang[all]"
+TGI_PIN: "text-generation-inference"

@@ -21,10 +21,25 @@ PORT="${PORT:-8000}"
 OUTPUT_TOKENS="${OUTPUT_TOKENS:-128}"
 CONCURRENCY="${CONCURRENCY:-1 2 4 8 16 32}"
 PROMPT_LENS="${PROMPT_LENS:-32 128 512 2048}"
-PROMPTS_PER_CELL="${PROMPTS_PER_CELL:-20}"
+PROMPTS_PER_CELL="${PROMPTS_PER_CELL:-40}"
 VLLM_EXTRA_ARGS="${VLLM_EXTRA_ARGS:---gpu-memory-utilization 0.9 --max-model-len 4096}"
 SGLANG_EXTRA_ARGS="${SGLANG_EXTRA_ARGS:---mem-fraction-static 0.9 --context-length 4096}"
 TGI_EXTRA_ARGS="${TGI_EXTRA_ARGS:---max-total-tokens 4096 --max-batch-size 256}"
+
+# Engine install pins. Bump deliberately; results are not comparable across
+# engine versions. Each engine gets its OWN venv (see bench_engine) so pip
+# never mutates the pod template's preinstalled torch.
+VLLM_PIN="${VLLM_PIN:-vllm==0.8.5.post1}"
+SGLANG_PIN="${SGLANG_PIN:-sglang[all]}"
+TGI_PIN="${TGI_PIN:-text-generation-inference}"
+
+# --- Pod preflight (fails fast, before burning GPU hours) ---
+echo "=== Pod preflight ==="
+nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader || echo "WARN: nvidia-smi not found"
+python3 -V
+python3 -c "import torch; print('template torch', torch.__version__, '| cuda build', torch.version.cuda, '| visible', torch.cuda.is_available())" 2>/dev/null || echo "note: template has no torch (fine — engines install their own in venvs)"
+ls -la "$HOME/.cache/huggingface/token" >/dev/null 2>&1 && echo "HF token present" || echo "WARN: no HF token at ~/.cache/huggingface/token — run: huggingface-cli login"
+echo
 
 # Engines to bench (from positional args, or all 3)
 if [ $# -gt 0 ]; then
@@ -49,36 +64,61 @@ echo "Prompts/cell:     $PROMPTS_PER_CELL"
 echo "============================================"
 echo
 
-# --- Dependency check ---
-python -c "import httpx" 2>/dev/null || {
-    echo "[setup] installing httpx..."
-    pip install -q httpx
-}
+# --- Dependency check (client dep; installed into the first venv as needed) ---
+# httpx is installed into each engine venv during setup, so nothing is needed
+# at the system level.
 
 bench_engine() {
     local engine="$1"
+    local venv_dir="$PROJECT_DIR/venvs/$engine"
+    local venv_py="$venv_dir/bin/python"
+    local venv_bin="$venv_dir/bin"
+    local venv_marker="$venv_dir/.ready"
+
     echo "=========================================="
-    echo " [$engine] phase 1: install"
+    echo " [$engine] phase 1: install (isolated venv)"
     echo "=========================================="
-    case "$engine" in
-        vllm)
-            # Pin: vLLM 0.8.5.post1 requires torch==2.6.0 (cu126 wheel).
-            # RunPod driver 570 supports CUDA <=12.8, so cu126 works.
-            # Newer vLLM needs torch 2.7+ (cu128/cu130) which driver 570 can't run.
-            pip install -q "vllm==0.8.5.post1"
-            ;;
-        sglang)
-            pip install -q "sglang[all]"
-            ;;
-        tgi)
-            # TGI ships as a bundled Rust+Python package
-            pip install -q text-generation-inference
-            ;;
-        *)
-            echo "Unknown engine: $engine"
-            return 1
-            ;;
-    esac
+    # Isolated venv per engine: pip never touches the template's torch, and
+    # engines cannot conflict with each other.
+    if [ ! -d "$venv_dir" ]; then
+        python3 -m venv "$venv_dir"
+    fi
+
+    if [ ! -f "$venv_marker" ]; then
+        case "$engine" in
+            vllm)
+                # Pin: vLLM 0.8.5.post1 requires torch==2.6.0 (cu126 wheel).
+                # Driver 580/CUDA 13.0 on this pod runs cu126 fine.
+                # Install torch from the PyTorch index first so pip resolves the
+                # CUDA wheel (not a CPU build) regardless of the pod template.
+                "$venv_py" -m pip install -q --upgrade pip
+                "$venv_py" -m pip install -q torch==2.6.0 --index-url https://download.pytorch.org/whl/cu126
+                "$venv_py" -m pip install -q "$VLLM_PIN" httpx
+                ;;
+            sglang)
+                "$venv_py" -m pip install -q --upgrade pip
+                "$venv_py" -m pip install -q torch --index-url https://download.pytorch.org/whl/cu126
+                "$venv_py" -m pip install -q "$SGLANG_PIN" httpx
+                ;;
+            tgi)
+                # TGI ships as a bundled Rust+Python package; install into venv.
+                "$venv_py" -m pip install -q --upgrade pip
+                "$venv_py" -m pip install -q "$TGI_PIN" httpx
+                ;;
+            *)
+                echo "Unknown engine: $engine"
+                return 1
+                ;;
+        esac
+        touch "$venv_marker"
+    else
+        echo "[$engine] venv already provisioned — skipping install"
+    fi
+
+    # Preflight inside the venv: verify torch sees the GPU and prints versions.
+    echo "[$engine] venv preflight:"
+    "$venv_py" -c "import torch; assert torch.cuda.is_available(), 'CUDA not available'; print('  torch', torch.__version__, '| cuda build', torch.version.cuda, '| gpu', torch.cuda.get_device_name(0))" \
+        || { echo "[$engine] PREFLIGHT FAILED — aborting this engine"; return 1; }
 
     echo "=========================================="
     echo " [$engine] phase 2: serve"
@@ -86,6 +126,11 @@ bench_engine() {
     local serve_script="scripts/serve_${engine}.sh"
     local extra_args_var="${engine^^}_EXTRA_ARGS"
     local extra_args="${!extra_args_var}"
+
+    # Prepend the engine venv's bin dir so `vllm`, `python`, and the launcher
+    # resolve inside the venv.
+    local old_path="$PATH"
+    export PATH="$venv_bin:$PATH"
 
     # Start server; script prints PID on last line
     local serve_log
@@ -100,7 +145,7 @@ bench_engine() {
     echo "=========================================="
     echo " [$engine] phase 3: benchmark"
     echo "=========================================="
-    python scripts/bench_client.py \
+    "$venv_py" scripts/bench_client.py \
         --endpoint "http://localhost:$PORT" \
         --engine "$engine" \
         --model "$MODEL" \
@@ -115,6 +160,7 @@ bench_engine() {
     echo "=========================================="
     kill "$server_pid" 2>/dev/null || true
     trap - EXIT
+    export PATH="$old_path"
     # Wait for GPU memory to free
     echo "[$engine] waiting 15s for GPU memory to free..."
     sleep 15
@@ -130,7 +176,12 @@ done
 echo "============================================"
 echo " Aggregating results"
 echo "============================================"
-python scripts/collect_results.py --in results/ --out results/
+# Use the first available venv python (all have httpx + stdlib needed).
+if [ -x "$PROJECT_DIR/venvs/vllm/bin/python" ]; then
+    "$PROJECT_DIR/venvs/vllm/bin/python" scripts/collect_results.py --in results/ --out results/
+else
+    python3 scripts/collect_results.py --in results/ --out results/
+fi
 
 echo
 echo "============================================"
