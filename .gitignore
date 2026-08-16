@@ -29,9 +29,9 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
-# Benchmark results — large, regenerated per run. Keep dir via .gitkeep.
-results/*
-!results/.gitkeep
+# Curated results are committed (results/<engine>/). The archive holds old or
+# intermediate runs kept only for reference — never committed.
+results_archive/
 
 # Model weights / HF cache (if anything lands locally)
 *.safetensors
