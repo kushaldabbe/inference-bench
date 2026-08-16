@@ -106,7 +106,9 @@ bench_engine() {
                 "$venv_py" -m pip install "$VLLM_PIN" $VLLM_TRANSFORMERS_PIN httpx hf_transfer
                 ;;
             sglang)
-                "$venv_py" -m pip install "$SGLANG_PIN" httpx
+                # FlashInfer JIT-compiles kernels at server startup via ninja;
+                # without it, launch fails with 'No such file or directory: ninja'.
+                "$venv_py" -m pip install "$SGLANG_PIN" httpx ninja
                 ;;
             tgi)
                 # TGI ships as a bundled Rust+Python package; install into venv.
