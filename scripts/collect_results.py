@@ -78,7 +78,9 @@ def main():
         for r in ok:
             all_itls.extend([x * 1000 for x in r["itls_s"]])
         total_out_toks = sum(r["n_output_tokens"] for r in ok)
-        wall = max(r["e2e_s"] for r in ok)
+        # Wall time of the whole cell: all requests in the cell ran together,
+        # so throughput = total tokens / cell wall time, not / slowest request.
+        wall = max(r.get("cell_wall_s", 0.0) for r in ok)
         throughput = total_out_toks / wall if wall > 0 else 0
         summary_rows.append(
             {

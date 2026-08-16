@@ -159,9 +159,12 @@ async def run_cell(
         async with sem:
             return await stream_one(client, endpoint, model, prompt, output_tokens, temperature, req_id)
 
+    # Cell wall time = time from first request to last request finishing.
+    cell_start = time.perf_counter()
     async with httpx.AsyncClient(limits=limits) as client:
         tasks = [throttled(p, i) for i, p in enumerate(prompts)]
         results = await asyncio.gather(*tasks)
+    cell_wall_s = time.perf_counter() - cell_start
 
     with out_path.open("a") as f:
         for r in results:
@@ -170,6 +173,7 @@ async def run_cell(
             r["prompt_len_target"] = prompt_len
             r["temperature"] = temperature
             r["max_tokens"] = output_tokens
+            r["cell_wall_s"] = cell_wall_s
             f.write(json.dumps(r) + "\n")
             f.flush()
 
@@ -177,8 +181,7 @@ async def run_cell(
     fail = len(results) - len(ok)
     if ok:
         toks = sum(r["n_output_tokens"] for r in ok)
-        wall = max(r["e2e_s"] for r in ok)
-        throughput = toks / wall if wall > 0 else 0
+        throughput = toks / cell_wall_s if cell_wall_s > 0 else 0
         ttfts = [r["ttft_s"] for r in ok if r["ttft_s"] is not None]
         ttft_mean = sum(ttfts) / len(ttfts) if ttfts else 0
         print(
