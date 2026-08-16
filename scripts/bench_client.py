@@ -32,7 +32,9 @@ def make_prompts(n: int, target_tokens: int) -> list[str]:
     """Generate n synthetic prompts of roughly target_tokens length.
 
     Uses a repeatable lorem-style fill so length is predictable and content
-    is neutral (no model-specific bias).
+    is neutral (no model-specific bias). The instruction demands a long,
+    detailed response so generation runs toward max_tokens instead of
+    stopping early at an EOS (a one-sentence summary stops in ~30-40 tokens).
     """
     rng = random.Random(SEED + target_tokens)
     # ~1.3 chars per token for English text
@@ -50,7 +52,12 @@ def make_prompts(n: int, target_tokens: int) -> list[str]:
             w = rng.choice(words)
             buf.append(w)
             cur += len(w) + 1
-        prompt = " ".join(buf) + "\n\nSummarize the above in one sentence."
+        prompt = (
+            " ".join(buf)
+            + "\n\nWrite a long, detailed analysis of the above. "
+            "Cover the causes, the trade-offs involved, and concrete "
+            "recommendations. Be thorough and specific."
+        )
         prompts.append(prompt)
     return prompts
 
