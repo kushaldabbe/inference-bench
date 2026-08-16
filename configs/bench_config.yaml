@@ -34,7 +34,10 @@ PROMPTS_PER_CELL: 40
 
 # Engine install pins (installed into venvs/<engine> by run_all.sh).
 # Overridable via env: VLLM_PIN, SGLANG_PIN, TGI_PIN.
-VLLM_PIN: "vllm==0.8.5.post1"
-VLLM_TORCH: "torch==2.6.0"   # cu126 index — see run_all.sh
+# Confirmed on RunPod RTX 4090 / driver 570-580 / CUDA 13.0 / Python 3.12:
+#   venv --system-site-packages reuses template torch 2.8.0+cu128 (no download);
+#   vLLM 0.11.0 + transformers==4.55.2 (vLLM breaks with transformers 5.x).
+VLLM_PIN: "vllm==0.11.0"
+VLLM_TRANSFORMERS_PIN: "transformers==4.55.2 tokenizers>=0.21.1"
 SGLANG_PIN: "sglang[all]"
 TGI_PIN: "text-generation-inference"

@@ -29,7 +29,16 @@ TGI_EXTRA_ARGS="${TGI_EXTRA_ARGS:---max-total-tokens 4096 --max-batch-size 256}"
 # Engine install pins. Bump deliberately; results are not comparable across
 # engine versions. Each engine gets its OWN venv (see bench_engine) so pip
 # never mutates the pod template's preinstalled torch.
-VLLM_PIN="${VLLM_PIN:-vllm==0.8.5.post1}"
+#
+# Confirmed-working stack on RunPod (RTX 4090, driver 570/580, CUDA 13.0,
+# Python 3.12, template torch 2.8.0+cu128):
+#   - venv with --system-site-packages reuses the template torch (no torch
+#     download) and it sees the GPU (torch.cuda.is_available() == True).
+#   - vLLM 0.11.0 + transformers==4.55.2: vLLM 0.11.0 is NOT compatible with
+#     transformers 5.x (LlamaTokenizer.all_special_tokens_extended error), so
+#     transformers is pinned below 5.
+VLLM_PIN="${VLLM_PIN:-vllm==0.11.0}"
+VLLM_TRANSFORMERS_PIN="${VLLM_TRANSFORMERS_PIN:-transformers==4.55.2 tokenizers>=0.21.1}"
 SGLANG_PIN="${SGLANG_PIN:-sglang[all]}"
 TGI_PIN="${TGI_PIN:-text-generation-inference}"
 
@@ -78,32 +87,28 @@ bench_engine() {
     echo "=========================================="
     echo " [$engine] phase 1: install (isolated venv)"
     echo "=========================================="
-    # Isolated venv per engine: pip never touches the template's torch, and
+    # Isolated venv per engine with --system-site-packages: pip never touches
+    # the template's torch (it is reused from the system site-packages), and
     # engines cannot conflict with each other.
     if [ ! -d "$venv_dir" ]; then
-        python3 -m venv "$venv_dir"
+        python3 -m venv --system-site-packages "$venv_dir"
     fi
 
     if [ ! -f "$venv_marker" ]; then
+        "$venv_py" -m pip install --upgrade pip
         case "$engine" in
             vllm)
-                # Pin: vLLM 0.8.5.post1 requires torch==2.6.0 (cu126 wheel).
-                # Driver 580/CUDA 13.0 on this pod runs cu126 fine.
-                # Install torch from the PyTorch index first so pip resolves the
-                # CUDA wheel (not a CPU build) regardless of the pod template.
-                "$venv_py" -m pip install -q --upgrade pip
-                "$venv_py" -m pip install -q torch==2.6.0 --index-url https://download.pytorch.org/whl/cu126
-                "$venv_py" -m pip install -q "$VLLM_PIN" httpx
+                # Template torch (2.8.0+cu128) is reused via system-site-packages.
+                # transformers must stay < 5.x — vLLM 0.11.0 breaks with 5.x
+                # (LlamaTokenizer.all_special_tokens_extended AttributeError).
+                "$venv_py" -m pip install "$VLLM_PIN" $VLLM_TRANSFORMERS_PIN httpx
                 ;;
             sglang)
-                "$venv_py" -m pip install -q --upgrade pip
-                "$venv_py" -m pip install -q torch --index-url https://download.pytorch.org/whl/cu126
-                "$venv_py" -m pip install -q "$SGLANG_PIN" httpx
+                "$venv_py" -m pip install "$SGLANG_PIN" httpx
                 ;;
             tgi)
                 # TGI ships as a bundled Rust+Python package; install into venv.
-                "$venv_py" -m pip install -q --upgrade pip
-                "$venv_py" -m pip install -q "$TGI_PIN" httpx
+                "$venv_py" -m pip install "$TGI_PIN" httpx
                 ;;
             *)
                 echo "Unknown engine: $engine"

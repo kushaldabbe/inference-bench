@@ -83,10 +83,14 @@ billing hours.
 
 ### Engine installs (in each venv)
 
+Each venv is created with `--system-site-packages`, so the pod template's
+preinstalled torch is **reused, not re-downloaded** — this is what makes the
+install fast and version-safe.
+
 | Engine | Pin | Notes |
 |---|---|---|
-| vLLM | `vllm==0.8.5.post1` + `torch==2.6.0` (cu126 index) | torch pinned from the PyTorch index so pip gets the CUDA wheel, not a CPU build |
-| SGLang | `sglang[all]` + torch (cu126 index) | torch pulled from the PyTorch index |
+| vLLM | `vllm==0.11.0` + `transformers==4.55.2` | ⚠️ vLLM 0.11.0 breaks with transformers 5.x (`LlamaTokenizer.all_special_tokens_extended` error); transformers is pinned below 5 |
+| SGLang | `sglang[all]` | |
 | TGI | `text-generation-inference` | ⚠️ **TGI is archived** (HF maintenance mode, Mar 2026); still runs, treat as legacy |
 
 Pins are overridable: `VLLM_PIN=... SGLANG_PIN=... TGI_PIN=... ./run_all.sh`.
