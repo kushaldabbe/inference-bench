@@ -101,7 +101,9 @@ bench_engine() {
                 # Template torch (2.8.0+cu128) is reused via system-site-packages.
                 # transformers must stay < 5.x — vLLM 0.11.0 breaks with 5.x
                 # (LlamaTokenizer.all_special_tokens_extended AttributeError).
-                "$venv_py" -m pip install "$VLLM_PIN" $VLLM_TRANSFORMERS_PIN httpx
+                # hf_transfer: RunPod templates set HF_HUB_ENABLE_HF_TRANSFER=1
+                # but don't ship the package — model download fails without it.
+                "$venv_py" -m pip install "$VLLM_PIN" $VLLM_TRANSFORMERS_PIN httpx hf_transfer
                 ;;
             sglang)
                 "$venv_py" -m pip install "$SGLANG_PIN" httpx
