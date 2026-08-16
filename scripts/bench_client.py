@@ -73,7 +73,7 @@ async def stream_one(
 
     payload = {
         "model": model,
-        "prompt": prompt,
+        "messages": [{"role": "user", "content": prompt}],
         "max_tokens": max_tokens,
         "temperature": temperature,
         "stream": True,
@@ -82,7 +82,7 @@ async def stream_one(
     try:
         async with client.stream(
             "POST",
-            f"{endpoint}/v1/completions",
+            f"{endpoint}/v1/chat/completions",
             json=payload,
             timeout=httpx.Timeout(connect=10.0, read=300.0, write=10.0, pool=10.0),
         ) as resp:
@@ -102,7 +102,7 @@ async def stream_one(
                     choices = chunk.get("choices", [])
                     if not choices:
                         continue
-                    text = choices[0].get("text", "")
+                    text = choices[0].get("delta", {}).get("content", "")
                     if text:
                         t_now = time.perf_counter() - t_start
                         if ttft is None:
